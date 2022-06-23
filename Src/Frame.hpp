@@ -1,6 +1,6 @@
 #ifndef UTILITY_HPP
 #define UTILITY_HPP
-
+#include <string>
 #define MAX_DATA_SIZE 1500
 #define MAX_FRAME_SIZE MAX_DATA_SIZE + 9
 
