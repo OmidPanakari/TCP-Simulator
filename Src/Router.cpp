@@ -2,6 +2,7 @@
 #include <string>
 #include <iostream>
 #include <queue>
+#include <thread>
 #include <mutex>
 #include <sys/socket.h> 
 #include <arpa/inet.h> 
@@ -19,6 +20,7 @@ class Router {
     char inputBuffer[MAX_FRAME_SIZE], outputBuffer[MAX_FRAME_SIZE];
     Frame buffer[MAX_BUFFER_SIZE];
     mutex bufferMutex;
+    int bufferSize;
 
     void InitSocket() {
         if ((routerFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -35,8 +37,26 @@ class Router {
         }
     }
 
-    void AddNewHost(sockaddr_in hostAddr) {
-        
+    void PushBuffer(Frame frame){
+        bufferMutex.lock();
+        if(bufferSize != MAX_BUFFER_SIZE){
+            buffer[bufferTail] = frame;
+            bufferTail = (bufferTail + 1) % MAX_BUFFER_SIZE;
+            bufferSize++;
+        }
+        bufferMutex.unlock();
+    }
+
+    Frame PopBuffer(){
+        Frame frame;
+        bufferMutex.lock();
+        if(bufferSize != MAX_BUFFER_SIZE){
+            frame = buffer[bufferHead];
+            bufferHead = (bufferHead + 1) % MAX_BUFFER_SIZE;
+            bufferSize--;
+        }
+        bufferMutex.unlock();
+        return frame;
     }
 
     void HandleInput() {
@@ -45,15 +65,28 @@ class Router {
         while(true) {
             recvfrom(routerFd, (char *)inputBuffer, MAX_FRAME_SIZE, MGS_WAITALL, (struct sockaddr *)&hostAddr, &addrSize);
             char frameType = Frame::GetFrameType(inputBuffer);
-            if (frameType == CONNECT) {
-                AddNewHost(hostAddr);
-            }
-            else if (frameType == SEND) {
-
+            Frame frame;
+            if (frameType == DATA) {
+                frame = DataFrame::GetFrame(inputBuffer);
             }
             else {
-
+                frame = AckFrame::GetFrame(inputBuffer);
             }
+            PushBuffer(frame);
+        }
+    }
+
+    void SendData(){
+        while (true){
+            if(bufferSize == 0)
+                continue;
+            Frame frame = PopBuffer();
+            int frameSize = frame.WriteToBuffer(outputBuffer);
+            struct sockaddr_in hostAddr;
+            hostAddr.sin_family = AF_INET;
+            hostAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+            hostAddr.sin_port = htons(frame.dest);
+            sendto(routerFd, outputBuffer, frameSize, 0, (struct sockaddr *) hostAddr, sizeof(hostAddr));
         }
     }
 
@@ -64,11 +97,12 @@ public:
         port = _port;
         bufferHead = 0;
         bufferTail = 0;
+        bufferSize = 0;
     }
     void Run() {
         InitSocket();
-        
-        
+        thread inputThread(HandleInput);
+        SendData();
     }
 };
 
