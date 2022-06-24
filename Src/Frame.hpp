@@ -7,6 +7,8 @@
 #define DATA 0
 #define ACK 1
 
+#define FIN 1
+
 struct Frame {
     int seqNum, src, dest;
     virtual int WriteToBuffer(char *buffer) = 0;
@@ -14,6 +16,7 @@ struct Frame {
 };
 
 struct DataFrame: Frame {
+    char flag;
     int dataSize;
     char data[MAX_DATA_SIZE];
     int WriteToBuffer(char *buffer);

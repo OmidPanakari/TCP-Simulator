@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "chrono": "cpp",
+        "iostream": "cpp",
+        "fstream": "cpp",
+        "mutex": "cpp",
+        "thread": "cpp",
+        "string": "cpp",
+        "map": "cpp",
+        "*.tcc": "cpp",
+        "deque": "cpp",
+        "unordered_map": "cpp",
+        "vector": "cpp"
+    }
+}

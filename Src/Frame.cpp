@@ -9,9 +9,10 @@ int DataFrame::WriteToBuffer(char* buffer){
     memcpy(buffer + 1, &seqNum, 4);
     memcpy(buffer + 5, &dest, 4);
     memcpy(buffer + 9, &src, 4);
-    memcpy(buffer + 13, &dataSize, 4);
-    memcpy(buffer + 17, data, dataSize);
-    return dataSize + 17;
+    memcpy(buffer + 13, &flag, 1);
+    memcpy(buffer + 14, &dataSize, 4);
+    memcpy(buffer + 18, data, dataSize);
+    return dataSize + 18;
 }
 
 int AckFrame::WriteToBuffer(char* buffer){
@@ -35,8 +36,9 @@ DataFrame DataFrame::GetFrame(char* buffer){
     memcpy(&frame.seqNum, buffer + 1, 4);
     memcpy(&frame.dest, buffer + 5, 4);
     memcpy(&frame.src, buffer + 9, 4);
-    memcpy(&frame.dataSize, buffer + 13, 4);
-    memcpy(frame.data, buffer + 17, frame.dataSize);
+    memcpy(&frame.flag, buffer + 13, 1);
+    memcpy(&frame.dataSize, buffer + 14, 4);
+    memcpy(frame.data, buffer + 18, frame.dataSize);
     return frame;
 
 }
