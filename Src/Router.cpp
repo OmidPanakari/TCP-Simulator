@@ -12,6 +12,12 @@ using namespace std;
 
 #define ROUTER_PORT 5000
 #define MAX_BUFFER_SIZE 1000
+#define MIN_THRESH_HOLD 100
+#define MAX_THRESH_HOLD 900
+#define RED_WEIGHT 0.002
+#define MAX_P 0.1
+
+const bool RED_ENABLE = true;
 
 
 class Router {
@@ -21,6 +27,8 @@ class Router {
     Frame buffer[MAX_BUFFER_SIZE];
     mutex bufferMutex;
     int bufferSize;
+    float meanBufferSize;
+    int count;
 
     void InitSocket() {
         if ((routerFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -59,11 +67,36 @@ class Router {
         return frame;
     }
 
+    void UpdateMeanBufferSize(){
+        meanBufferSize = (1 - RED_WEIGHT) * meanBufferSize + RED_WEIGHT * bufferSize;
+    }
+
     void HandleInput() {
         sockaddr_in hostAddr;
         socklen_t addrSize;
         while(true) {
             recvfrom(routerFd, (char *)inputBuffer, MAX_FRAME_SIZE, MGS_WAITALL, (struct sockaddr *)&hostAddr, &addrSize);
+            if (RED_ENABLE && meanBufferSize >= MIN_THRESH_HOLD)
+            {
+                if (meanBufferSize >= MAX_THRESH_HOLD){
+                    count = 0;
+                    UpdateMeanBufferSize();
+                    continue;
+                }else{
+                    float tempP = MAX_P * (meanBufferSize - MIN_THRESH_HOLD) / (MAX_THRESH_HOLD - MIN_THRESH_HOLD);
+                    float p = tempP / (1 - count * tempP);
+                    srand(time(0));
+                    int i = rand() % 100;
+                    if (i < p * 100)
+                    {
+                        count = 0;
+                        UpdateMeanBufferSize();
+                        continue;
+                    }
+                }
+            }
+            UpdateMeanBufferSize();
+            count++;
             char frameType = Frame::GetFrameType(inputBuffer);
             Frame frame;
             if (frameType == DATA) {
@@ -98,6 +131,8 @@ public:
         bufferHead = 0;
         bufferTail = 0;
         bufferSize = 0;
+        meanBufferSize = 0;
+        count = 0;
     }
     void Run() {
         InitSocket();
