@@ -1,5 +1,5 @@
 CC = g++
-FLAGS = -std=c++17 -Wall
+FLAGS = -std=c++17 -Wall -pthread -g
 RM = rm
 SRC = Src/
 
@@ -21,12 +21,12 @@ Host.o: $(SRC)Host.cpp $(SRC)Frame.hpp
 Router.o: $(SRC)Router.cpp $(SRC)Frame.hpp
 	$(CC) $(FLAGS) $(SRC)Router.cpp -c -o $(SRC)Router.o
 
-Frame.o: Frame.cpp Frame.hpp
-	$(CC) $(FLAGS) $(SRC)Frame.cpp -c
+Frame.o: $(SRC)Frame.cpp $(SRC)Frame.hpp
+	$(CC) $(FLAGS) $(SRC)Frame.cpp -c -o $(SRC)Frame.o
 
 
 
 
 .PHONY: clean
 clean:
-	$(RM) *.out	*.o
+	$(RM) $(SRC)*.out	$(SRC)*.o

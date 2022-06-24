@@ -4,18 +4,23 @@
 #include <fstream>
 #include <chrono>
 #include <mutex>
+#include <vector>
 #include <map>
 #include <string>
 #include <thread>
 #include <sstream>
-#include <sys/socket.h> 
+#include <sys/socket.h>
+#include <unistd.h>
 #include <arpa/inet.h> 
 #include <netinet/in.h>
+#include <sys/types.h>
+#include <string.h>
+#include <stdio.h>
 
 using namespace std;
 
 #define WINDOW_SIZE 20
-#define MAX_SEQ 2 * WINDOW_SIZE
+#define MAX_SEQ (2 * WINDOW_SIZE)
 
 #define TIMEOUT 10
 
@@ -31,28 +36,28 @@ struct Packet {
 struct Window {
     Packet window[WINDOW_SIZE];
     int windowHead, windowTail, windowSize;
-    mutex windowMutex;
     bool isFinished;
-}
+};
 
 struct Sender:Window {
-    int recieverPort, hostFd, fileSize;
+    int receiverPort, hostFd, fileSize;
     string fileName;
     ifstream file;
     chrono::time_point<chrono::high_resolution_clock> start;
 };
 
-struct Reciever:Window {
+struct Receiver:Window {
     int senderPort, hostFd;
-    ofstream file;
+    string file;
 };
 
 class Host {
     int hostPort, routerPort, hostFd;
     sockaddr_in hostAddr;
     Sender sender;
-    map<int, Reciever> recievers;
+    map<int, Receiver> receivers;
     char inputBuffer[MAX_FRAME_SIZE], outputBuffer[MAX_FRAME_SIZE];
+    mutex senderMutex, receiverMutex;
 
     string ToString(int a) {
         stringstream ss;
@@ -66,10 +71,10 @@ class Host {
             exit(0);
         }
         hostAddr.sin_family = AF_INET;
-        hostAddr.sin_addr.s_addr = INADR_ANY;
+        hostAddr.sin_addr.s_addr = INADDR_ANY;
         hostAddr.sin_port = htons(hostPort);
 
-        if (bind(hostFd, (const struct scokaddr *)&hostAddr, sizeof(hostAddr)) < 0) {
+        if (bind(hostFd, (const struct sockaddr *)&hostAddr, sizeof(hostAddr)) < 0) {
             cout << "Cannot bind socket to address" << endl;
             exit(0);
         }
@@ -80,16 +85,17 @@ class Host {
             return seqNum >= window.windowHead || seqNum < window.windowTail;
         }
         else {
-            return seqNum >= window.windowHead && seqNum < window.windowTail
+            return seqNum >= window.windowHead && seqNum < window.windowTail;
         }
     }
 
-    void RecieveAck(AckFrame ack) {
-        sender.windowMutex.lock();
+    void ReceiveAck(AckFrame ack) {
+        senderMutex.lock();
         if (ContainsSeqNum(sender, ack.seqNum)) {
+            cout << "receiving ack : "<< ack.seqNum << endl;
             sender.window[ack.seqNum % WINDOW_SIZE].acknowledged = true;
         }
-        sender.windowMutex.unlock();
+        senderMutex.unlock();
     }
 
     void SendAck(DataFrame data) {
@@ -97,106 +103,116 @@ class Host {
         ack.src = hostPort;
         ack.dest = data.src;
         ack.seqNum = data.seqNum;
-        char buffer[MAX_BUFFER_SIZE];
+        char buffer[MAX_DATA_SIZE];
         sockaddr_in addr;
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = inet_addr("127.0.0.1");
         addr.sin_port = htons(routerPort);
         int ackSize = ack.WriteToBuffer(buffer);
-        sendto(hostFd, buffer, ackSize, 0, (struct sockaddr *)addr, sizeof(addr));
+        sendto(hostFd, buffer, ackSize, 0, (struct sockaddr *)&addr, sizeof(addr));
     }
 
     void FillPacket(Packet *packet, DataFrame data) {
-        paket->content = (char *)malloc(data.dataSize);
+        packet->content = (char *)malloc(data.dataSize);
         packet->dataSize = data.dataSize;
         memcpy(packet->content, data.data, data.dataSize);
         packet->acknowledged = true;
         packet->isLast = (data.flag == FIN);
     }
 
-    void RecieveData(DataFrame data) {
-        auto it = recievers.find(data.src);
-        if (it != recievers.end()) {
-            Reciever *reciever = &it->second;
-            reciever->windowMutex.lock();
-            if (ContainsSeqNum(*reciever, data.seqNum)) {
-                FillPacket(&reciever->window[data.seqNum % WINDOW_SIZE], data);
-                reciever->windowMutex.unlock();
+    void ReceiveData(DataFrame data) {
+        auto it = receivers.find(data.src);
+        if (it != receivers.end()) {
+            Receiver *receiver = &it->second;
+            receiverMutex.lock();
+            if (!receiver->isFinished && ContainsSeqNum(*receiver, data.seqNum)) {
+                FillPacket(&receiver->window[data.seqNum % WINDOW_SIZE], data);
+                receiverMutex.unlock();
             }
             else {
-                reciever->windowMutex.unlock();
+                receiverMutex.unlock();
                 SendAck(data);
             }
         }
         else {
-            Reciever newReciever;
-            newReciever.windowHead = 0;
-            newReciever.windoTail = 0;
-            newReciever.file.open("Reciever/" + ToString(data.src) + ".txt", ios::out);
-            while(newReciever.windowSize < WINDOW_SIZE) {
+            Receiver newReceiver;
+            newReceiver.windowHead = 0;
+            newReceiver.windowTail = 0;
+            newReceiver.windowSize = 0;
+            newReceiver.isFinished = false;
+            string path = "Receiver/" + ToString(data.src) + ".txt";
+            remove(path.c_str());
+            newReceiver.file = "Receiver/" + ToString(data.src) + ".txt";
+            while(newReceiver.windowSize < WINDOW_SIZE) {
                 Packet newPacket;
                 newPacket.acknowledged = false;
-                newReciever.window[newReciever.windoTail%WINDOW_SIZE] = newPacket;
-                newReciever.windowSize++;
-                newReciever.windowTail = (newReciever.windowTail + 1) % MAX_SEQ;
+                newPacket.isLast = false;
+                newReceiver.window[newReceiver.windowTail % WINDOW_SIZE] = newPacket;
+                newReceiver.senderPort = data.src;
+                newReceiver.windowSize++;
+                newReceiver.windowTail = (newReceiver.windowTail + 1) % MAX_SEQ;
             }
-            FillPacket(&newReciever.window[data.seqNum % WINDOW_SIZE], data);
-            recievers[data.src] = newReciever;
+            FillPacket(&newReceiver.window[data.seqNum % WINDOW_SIZE], data);
+            receivers[data.src] = newReceiver;
         }
     }
 
-    void RecieveFrames() {
+    void ReceiveFrames() {
         sockaddr_in addr;
         socklen_t addrLen;
         while (true) {
-            recvfrom(hostFd, (char *)inputBuffer, MAX_FRAME_SIZE, MGS_WAITALL, (struct sockaddr *)&addr, &addrLen);
+            recvfrom(hostFd, (char *)inputBuffer, MAX_FRAME_SIZE, MSG_WAITALL, (struct sockaddr *)&addr, &addrLen);
             int frameType = Frame::GetFrameType(inputBuffer);
             if (frameType == DATA) {
-                DataFrame data = DataFrame::GetFrame(inputBuffer);
-                RecieveData(data);
+                DataFrame data = *DataFrame::GetFrame(inputBuffer);
+                cout << "receiving packet : " << data.seqNum << endl;
+                ReceiveData(data);
             }
             else {
-                AckFrame ack = AckFrame::GetFrame(inputBuffer);
-                RecieveAck(ack);
+                AckFrame ack = *AckFrame::GetFrame(inputBuffer);
+                ReceiveAck(ack);
             }
         }
     }
 
-    void SendPacket(Packet packet, int recieverPort, int seqNum) {
+    void SendPacket(Packet packet, int receiverPort, int seqNum) {
         DataFrame data;
         data.src = hostPort;
-        data.dest = recieverPort;
+        data.dest = receiverPort;
         data.flag = (packet.isLast) ? FIN : 0;
         data.dataSize = packet.dataSize;
         data.seqNum = seqNum;
         memcpy(data.data, packet.content, packet.dataSize);
         sockaddr_in addr;
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1"););
-        addr.sin_port = htons(data.dest);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        addr.sin_port = htons(routerPort);
         int frameSize = data.WriteToBuffer(outputBuffer);
-        sendto(hostFd, outputBuffer, frameSize, 0, (struct sockaddr *)addr, sizeof(addr));
+        cout<< "sending packet :" << seqNum <<endl;
+        sendto(hostFd, outputBuffer, frameSize, 0, (struct sockaddr *)&addr, sizeof(addr));
     }
 
-    void SendPacketAck(Packet packet, int recieverPort, int seqNum) {
+    void SendPacketAck(Packet packet, int receiverPort, int seqNum) {
         AckFrame ack;
         ack.src = hostPort;
-        ack.dest = recieverPort;
+        ack.dest = receiverPort;
         ack.seqNum = seqNum;
         sockaddr_in addr;
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1"););
-        addr.sin_port = htons(ack.dest);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        addr.sin_port = htons(routerPort);
         int frameSize = ack.WriteToBuffer(outputBuffer);
-        sendto(hostFd, outputBuffer, frameSize, 0, (struct sockaddr *)addr, sizeof(addr));
+        cout << "sending ack : "<< ack.seqNum << endl;
+        sendto(hostFd, outputBuffer, frameSize, 0, (struct sockaddr *)&addr, sizeof(addr));
     }
 
     void CheckSender() {
-        if (sneder.isFinished) {
-            continue;
+        senderMutex.lock();
+        if (sender.isFinished) {
+            senderMutex.unlock();
+            return;
         }
         Packet packet;
-        sender.windowMutex.lock();
         while (sender.windowSize && sender.window[sender.windowHead % WINDOW_SIZE].acknowledged) {
             sender.windowSize--;
             packet = sender.window[sender.windowHead % WINDOW_SIZE];
@@ -210,89 +226,101 @@ class Host {
         for (int i = sender.windowHead; i != sender.windowTail; i = (i+1)% MAX_SEQ) {
             auto tm = chrono::high_resolution_clock::now();
             if (chrono::duration_cast<chrono::milliseconds>(tm - sender.window[i% WINDOW_SIZE].start).count() >= TIMEOUT) {
+                cout << chrono::duration_cast<chrono::milliseconds>(tm - sender.window[i% WINDOW_SIZE].start).count() << endl;
                 sender.window[i% WINDOW_SIZE].start = tm;
-                SendPacket(sender.window[i% WINDOW_SIZE], sender.recieverPort, i);
+                SendPacket(sender.window[i% WINDOW_SIZE], sender.receiverPort, i);
             }
         }
+
         while (sender.fileSize && sender.windowSize != WINDOW_SIZE) {
-            int readSize = MAX_BUFFER_SIZE;
-            if (sender.fileSize <= MAX_BUFFER_SIZE) {
+            int readSize = MAX_DATA_SIZE;
+            if (sender.fileSize <= MAX_DATA_SIZE) {
                 readSize = sender.fileSize;
                 sender.fileSize = 0;
             }
             else {
-                sender.fileSize -= MAX_BUFFER_SIZE;
+                sender.fileSize -= MAX_DATA_SIZE;
             }
             packet.content = (char *)malloc(readSize);
             packet.dataSize = readSize;
             packet.acknowledged = false;
-            packet.isLast = false;
             packet.isLast = (sender.fileSize == 0);
+            sender.windowSize++;
             sender.file.read((char *)packet.content, packet.dataSize);
+            packet.start = chrono::high_resolution_clock::now();
             sender.window[sender.windowTail % WINDOW_SIZE] = packet;
             sender.windowTail = (sender.windowTail + 1) % MAX_SEQ;
-            sender.windowMutex.unlock();
-            packet.start = chrono::high_resolution_clock::now();
-            SendPacket(packet, sender.recieverPort, (sender.windowTail - 1 + MAX_SEQ) % MAX_SEQ);
-            sender.windowMutex.lock();
+            senderMutex.unlock();
+            SendPacket(packet, sender.receiverPort, (sender.windowTail - 1 + MAX_SEQ) % MAX_SEQ);
+            senderMutex.lock();
         }
-        sender.windowMutex.unlock();
+
+        senderMutex.unlock();
     }
 
-    void CheckRecievers() {
+    void CheckReceivers() {
         vector<int> finished;
-        for (auto it : recievers) {
-            Reciever *reciever = &(it->second);
-            reciever->windowMutex.lock();
-            while(reciever->windowSize && reciever->window[reciever.windowHead % WINDOW_SIZE].acknowledged) {
-                Packet *packet = &(reciever->window[reciever.windowHead % WINDOW_SIZE]);
-                reciever->windowHead = (reciever->windowHead + 1) % MAX_SEQ;
-                reciever->windowSize--;
-                reciever->windowMutex.unlock();
-                reciever->file.write(packet->content, packet->dataSize);
-                SendPacketAck(&packet);
+        map<int, Receiver>::iterator it;
+        for (it = receivers.begin(); it != receivers.end(); it++) {
+            Receiver *receiver = &(it->second);
+            if (receiver->isFinished) continue;
+            receiverMutex.lock();
+            while(receiver->windowSize && receiver->window[receiver->windowHead % WINDOW_SIZE].acknowledged) {
+                Packet *packet = &(receiver->window[receiver->windowHead % WINDOW_SIZE]);
+                receiver->windowHead = (receiver->windowHead + 1) % MAX_SEQ;
+                receiver->windowSize--;
+                //receiverMutex.unlock();
+                ofstream file(receiver->file, ios::app);
+                file.write(packet->content, packet->dataSize);
+                file.close();
+                SendPacketAck(*packet, receiver->senderPort, (receiver->windowHead - 1 + MAX_SEQ) % MAX_SEQ);
                 free(packet->content);
                 if (packet->isLast) {
-                    reciever->file.close();
-                    reciever->isFinished = true;
+                    receiver->isFinished = true;
                     finished.push_back(it->first);
                 }
-                reciever->windowMutex.lock();
+                //receiverMutex.lock();
             }
-            if (reciever->isFinished) continue;
+            if (receiver->isFinished) continue;
             Packet packet;
-            while(reciever->windowSize < WINDOW_SIZE) {
+            while(receiver->windowSize < WINDOW_SIZE) {
                 packet.acknowledged = false;
-                reciever->window[reciever->windowTail % WINDOW_SIZE] = packet;
-                reciever->windowSize++;
-                reciever->windowTaile = (reciever->windowTail + 1) % MAX_SEQ;
+                packet.isLast = false;
+                receiver->window[receiver->windowTail % WINDOW_SIZE] = packet;
+                receiver->windowSize++;
+                receiver->windowTail = (receiver->windowTail + 1) % MAX_SEQ;
             }
-            reciever->windowMutex.unlock();
+            receiverMutex.unlock();
         }
-        for (int ind: finished) {
-            recievers.erase(recievers.find(ind));
-        }
+//        for (int ind: finished) {
+//            receivers.erase(receivers.find(ind));
+//        }
     }
 
     void Check() {
         while(true) {
             CheckSender();
-            CheckRecievers();
+            CheckReceivers();
         }
     }
 
-    void StartSend(int recieverPort) {
+    void StartSend(int receiverPort) {
+        senderMutex.lock();
         sender.file.open("Sender/" + ToString(hostPort) + ".txt", ios::in);
         sender.file.seekg(0, sender.file.end);
         sender.fileSize = sender.file.tellg();
         sender.file.seekg(0, sender.file.beg);
-        sender.recieverPort = recieverPort;
+        sender.windowHead = 0;
+        sender.windowTail = 0;
+        sender.windowSize = 0;
+        sender.receiverPort = receiverPort;
         sender.isFinished = false;
         sender.start = chrono::high_resolution_clock::now();
+        senderMutex.unlock();
     }
 
 public:
-    Host(int _hostPort, _routerPort) {
+    Host(int _hostPort, int _routerPort) {
         hostPort = _hostPort;
         routerPort = _routerPort;
     }
@@ -302,15 +330,15 @@ public:
         sender.fileSize = 0;
         sender.windowSize = 0;
         sender.isFinished = true;
-        thread recieveThread(RecieveFrames);
-        thread checkThread(Check);
+        thread receiveThread(&Host::ReceiveFrames, this);
+        thread checkThread(&Host::Check, this);
         string cmd;
         while(true) {
             cin >> cmd;
             if (cmd == "send") {
-                int recieverPort;
-                cin >> recieverPort;
-                StartSend(recieverPort);
+                int receiverPort;
+                cin >> receiverPort;
+                StartSend(receiverPort);
             }
         }
     }
@@ -322,7 +350,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    Host host(atoi(argv[1], ROUTER_PORT));
-    Host.Run();
+    Host host(atoi(argv[1]), ROUTER_PORT);
+    host.Run();
     return 0;
 }
