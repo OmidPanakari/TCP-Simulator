@@ -165,7 +165,6 @@ class Host {
             int frameType = Frame::GetFrameType(inputBuffer);
             if (frameType == DATA) {
                 DataFrame data = *DataFrame::GetFrame(inputBuffer);
-                cout << "receiving packet : " << data.seqNum << endl;
                 ReceiveData(data);
             }
             else {
@@ -207,11 +206,10 @@ class Host {
     }
 
     void CheckSender() {
-        senderMutex.lock();
         if (sender.isFinished) {
-            senderMutex.unlock();
             return;
         }
+        senderMutex.lock();
         Packet packet;
         while (sender.windowSize && sender.window[sender.windowHead % WINDOW_SIZE].acknowledged) {
             sender.windowSize--;
@@ -220,6 +218,8 @@ class Host {
             free(packet.content);
             if (packet.isLast) {
                 sender.isFinished = true;
+                sender.file.close();
+                senderMutex.unlock();
                 return;
             }
         }
@@ -263,7 +263,6 @@ class Host {
         map<int, Receiver>::iterator it;
         for (it = receivers.begin(); it != receivers.end(); it++) {
             Receiver *receiver = &(it->second);
-            if (receiver->isFinished) continue;
             receiverMutex.lock();
             while(receiver->windowSize && receiver->window[receiver->windowHead % WINDOW_SIZE].acknowledged) {
                 Packet *packet = &(receiver->window[receiver->windowHead % WINDOW_SIZE]);
@@ -281,7 +280,10 @@ class Host {
                 }
                 //receiverMutex.lock();
             }
-            if (receiver->isFinished) continue;
+            if (receiver->isFinished){
+                receiverMutex.unlock();
+                continue;
+            }
             Packet packet;
             while(receiver->windowSize < WINDOW_SIZE) {
                 packet.acknowledged = false;

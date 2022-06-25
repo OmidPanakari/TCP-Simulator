@@ -11,14 +11,14 @@
 using namespace std;
 
 #define ROUTER_PORT 5000
-#define MAX_BUFFER_SIZE 1000
-#define MIN_THRESH_HOLD 100
-#define MAX_THRESH_HOLD 900
+#define MAX_BUFFER_SIZE 100
+#define MIN_THRESH_HOLD 10
+#define MAX_THRESH_HOLD 40
 #define RED_WEIGHT 0.002
 #define MAX_P 0.1
 
-const bool RED_ENABLE = false;
-const bool DROP_ENABLE = true;
+const bool RED_ENABLE = true;
+const bool DROP_ENABLE = false;
 
 
 class Router {
@@ -91,8 +91,11 @@ class Router {
             }
             if (RED_ENABLE && meanBufferSize >= MIN_THRESH_HOLD)
             {
+
                 if (meanBufferSize >= MAX_THRESH_HOLD){
                     count = 0;
+                    cout << "MAX" << endl;
+                    cout << meanBufferSize << endl;
                     UpdateMeanBufferSize();
                     continue;
                 }else{
